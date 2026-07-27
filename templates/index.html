@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>School Chatbot</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f5f7fb;
+      margin: 0;
+      padding: 40px;
+      color: #1f2937;
+    }
+    .card {
+      max-width: 700px;
+      margin: 0 auto;
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+    }
+    h1 { margin-top: 0; }
+    label { display: block; font-weight: 600; margin-top: 12px; }
+    textarea, input {
+      width: 100%;
+      margin-top: 8px;
+      padding: 12px;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      font-size: 16px;
+    }
+    button {
+      margin-top: 16px;
+      padding: 10px 16px;
+      border: none;
+      background: #2563eb;
+      color: white;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 16px;
+    }
+    .answer {
+      margin-top: 20px;
+      padding: 14px;
+      background: #eff6ff;
+      border-left: 4px solid #2563eb;
+      border-radius: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>School Q&amp;A Assistant</h1>
+    <p>Type a question about the school and get an answer from the local knowledge base.</p>
+
+    <label for="question">Question</label>
+    <textarea id="question" rows="4" placeholder="Example: What time does the school office open?"></textarea>
+
+    <button onclick="askQuestion()">Get Answer</button>
+
+    <div class="answer" id="answer">Your answer will appear here.</div>
+  </div>
+
+  <script>
+    async function askQuestion() {
+      const question = document.getElementById('question').value;
+      const answerBox = document.getElementById('answer');
+      if (!question.trim()) {
+        answerBox.textContent = 'Please enter a question.';
+        return;
+      }
+
+      answerBox.textContent = 'Thinking...';
+      try {
+        const response = await fetch(`/ask?question=${encodeURIComponent(question)}`);
+        const data = await response.json();
+        answerBox.textContent = data.answer || 'No answer found.';
+      } catch (error) {
+        answerBox.textContent = 'Sorry, something went wrong.';
+      }
+    }
+  </script>
+</body>
+</html>
