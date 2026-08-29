@@ -14,8 +14,7 @@ from app.config import DEBUG
 from app.config import LOGGER
 from app.knowledge import answer_question
 from app.knowledge import load_documents
-from app.twilio_whatsapp import send_twilio_message
-from app.whatsapp import send_whatsapp_message
+from app.slack import send_slack_message
 
 app = FastAPI(title=APP_NAME, debug=DEBUG)
 
@@ -50,69 +49,62 @@ def ask(question: str | None = None) -> dict[str, str]:
 
 @app.get("/whatsapp/webhook")
 def verify_whatsapp_webhook(mode: str | None = None, challenge: str | None = None) -> dict[str, str]:
-    """Handle webhook verification requests from Twilio or Meta."""
-    verify_token = os.getenv("META_VERIFY_TOKEN") or os.getenv("TWILIO_VERIFY_TOKEN", "school-chatbot")
-    if mode == "subscribe" and challenge is not None:
-        return {"challenge": challenge}
-    if mode == "subscribe" and challenge is None:
-        return {"status": "ok"}
-    if mode is None:
-        return {"status": "ok"}
-    if verify_token and mode == verify_token:
-        return {"status": "ok"}
-    raise HTTPException(status_code=400, detail="Invalid webhook verification")
+    """Legacy endpoint retained for compatibility; returns a simple OK result."""
+    return {"status": "ok"}
 
 
-def _extract_incoming_message(payload: Any) -> tuple[str | None, str | None]:
-    """Extract a sender number and message text from either simple or Meta payloads."""
+def _extract_slack_event(payload: Any) -> tuple[str | None, str | None, dict[str, Any] | None]:
+    """Extract a Slack channel and text from an events API payload.
+
+    Returns a tuple of (channel, text, original_event). For URL verification
+    payloads, returns (None, None, payload) so the caller can respond with
+    the challenge.
+    """
     if not isinstance(payload, dict):
-        return None, None
+        return None, None, None
 
-    if "entry" in payload:
-        for entry in payload.get("entry", []):
-            for change in entry.get("changes", []):
-                value = change.get("value", {})
-                messages = value.get("messages", [])
-                if not messages:
-                    continue
+    # URL verification challenge from Slack
+    if payload.get("type") == "url_verification":
+        return None, None, payload
 
-                message = messages[0]
-                from_number = message.get("from")
-                message_type = message.get("type", "")
-                if message_type == "text":
-                    message_text = message.get("text", {}).get("body", "")
-                else:
-                    message_text = ""
-                return from_number, message_text
+    # Event callback
+    if payload.get("type") == "event_callback":
+        event = payload.get("event", {})
+        # Ignore bot messages or non-message events
+        if event.get("type") != "message" or event.get("subtype") is not None:
+            return None, None, None
 
-    from_number = payload.get("from_number")
-    message_text = payload.get("message_text")
-    if from_number is None or message_text is None:
-        return None, None
-    return from_number, message_text
+        channel = event.get("channel")
+        text = event.get("text")
+        return channel, text, event
+
+    return None, None, None
 
 
-@app.post("/whatsapp/webhook")
-async def whatsapp_webhook(request: Request) -> dict[str, str]:
-    """Process incoming WhatsApp text messages and return a reply."""
+@app.post("/slack/events")
+async def slack_events(request: Request) -> dict[str, str]:
+    """Handle Slack Events API requests and reply with answers from docs."""
     payload = await request.json()
-    from_number, message_text = _extract_incoming_message(payload)
-    if not from_number or not message_text or not str(message_text).strip():
-        LOGGER.warning("Received empty WhatsApp message")
+    channel, message_text, original = _extract_slack_event(payload)
+
+    # Respond to URL verification challenges
+    if original and original.get("type") == "url_verification":
+        challenge = original.get("challenge")
+        return {"challenge": challenge}
+
+    if not channel or not message_text or not str(message_text).strip():
+        LOGGER.warning("Received empty Slack message or unsupported event")
         raise HTTPException(status_code=400, detail="Message text is required")
 
-    LOGGER.info("Incoming WhatsApp message from %s", from_number)
+    LOGGER.info("Incoming Slack message from channel %s", channel)
     answer = answer_question(str(message_text), DOCUMENTS)
 
     try:
-        if os.getenv("META_ACCESS_TOKEN") and os.getenv("META_PHONE_NUMBER_ID"):
-            send_whatsapp_message(from_number, answer)
-        else:
-            send_twilio_message(from_number, answer)
+        send_slack_message(channel, answer)
     except Exception as error:  # pragma: no cover - defensive logging
-        LOGGER.exception("Failed to send WhatsApp reply: %s", error)
+        LOGGER.exception("Failed to send Slack reply: %s", error)
 
     return {
-        "to": from_number,
+        "channel": channel,
         "message": answer,
     }
