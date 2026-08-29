@@ -1,8 +1,13 @@
 """FastAPI entrypoint for the school WhatsApp chatbot backend."""
 
 import os
+import json
+import time
+import hmac
+import hashlib
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs
 
 from fastapi import FastAPI
 from fastapi import HTTPException
@@ -21,6 +26,40 @@ app = FastAPI(title=APP_NAME, debug=DEBUG)
 TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "templates" / "index.html"
 KNOWLEDGE_BASE_PATH = Path(__file__).resolve().parent.parent / "knowledge_base"
 DOCUMENTS = load_documents(KNOWLEDGE_BASE_PATH)
+
+
+def _verify_slack_signature(request: Request, body: bytes) -> None:
+    """Verify Slack request signature to ensure request is from Slack.
+
+    Raises HTTPException(401) on signature mismatch or 400 on malformed request.
+    """
+    signing_secret = os.environ.get("SLACK_SIGNING_SECRET")
+    if not signing_secret:
+        LOGGER.warning("SLACK_SIGNING_SECRET not set; skipping Slack signature verification")
+        return
+
+    timestamp = request.headers.get("x-slack-request-timestamp")
+    signature = request.headers.get("x-slack-signature")
+    if not timestamp or not signature:
+        LOGGER.warning("Missing Slack signature headers")
+        raise HTTPException(status_code=400, detail="Missing Slack signature headers")
+
+    try:
+        req_ts = int(timestamp)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid timestamp")
+
+    # Protect against replay attacks (allow 5 minutes)
+    if abs(time.time() - req_ts) > 60 * 5:
+        LOGGER.warning("Slack request timestamp outside allowed range")
+        raise HTTPException(status_code=400, detail="Stale request")
+
+    basestring = f"v0:{timestamp}:{body.decode('utf-8')}"
+    computed = "v0=" + hmac.new(signing_secret.encode(), basestring.encode(), hashlib.sha256).hexdigest()
+
+    if not hmac.compare_digest(computed, signature):
+        LOGGER.warning("Slack signature verification failed")
+        raise HTTPException(status_code=401, detail="Invalid Slack signature")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -83,8 +122,18 @@ def _extract_slack_event(payload: Any) -> tuple[str | None, str | None, dict[str
 
 @app.post("/slack/events")
 async def slack_events(request: Request) -> dict[str, str]:
-    """Handle Slack Events API requests and reply with answers from docs."""
-    payload = await request.json()
+    """Handle Slack Events API requests and reply with answers from docs.
+
+    Verifies request signatures using `SLACK_SIGNING_SECRET` if present.
+    """
+    body_bytes = await request.body()
+    _verify_slack_signature(request, body_bytes)
+
+    try:
+        payload = json.loads(body_bytes.decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
     channel, message_text, original = _extract_slack_event(payload)
 
     # Respond to URL verification challenges
@@ -108,3 +157,29 @@ async def slack_events(request: Request) -> dict[str, str]:
         "channel": channel,
         "message": answer,
     }
+
+
+@app.post("/slack/commands")
+async def slack_commands(request: Request) -> dict[str, str]:
+    """Handle Slack Slash Commands (application/x-www-form-urlencoded).
+
+    Verifies request signatures and supports simple `/bot-ping` and
+    forwarding text to the knowledge base for other commands.
+    """
+    body_bytes = await request.body()
+    _verify_slack_signature(request, body_bytes)
+
+    try:
+        parsed = parse_qs(body_bytes.decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid form payload")
+
+    command = parsed.get("command", [None])[0]
+    text = parsed.get("text", [""])[0]
+
+    if command == "/bot-ping":
+        return {"response_type": "ephemeral", "text": "Pong!"}
+
+    # Fallback: treat the command text as a question for the knowledge base
+    answer = answer_question(text or "", DOCUMENTS)
+    return {"response_type": "in_channel", "text": answer}

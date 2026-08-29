@@ -1,7 +1,12 @@
-require("dotenv").config();
+// Explicitly load the repo-root .env and override any existing env vars.
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '.env'), override: true });
 
 const { App } = require("@slack/bolt");
 const axios = require("axios");
+
+// Debug: print the token the process is using
+console.log('NODE SLACK_BOT_TOKEN:', process.env.SLACK_BOT_TOKEN);
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
@@ -45,7 +50,7 @@ app.command("/bot-admission", async ({ ack, respond }) => {
   await ack();
   await respond({ text: "Admissions are handled through the school office. Visit the admissions desk or call the office for application information." });
 });
-
+ 
 app.command("/bot-contact", async ({ ack, respond }) => {
   await ack();
   await respond({ text: "School Office: +1-555-151-0041\nEmail: office@school.edu" });
@@ -69,7 +74,7 @@ app.command("/bot-directions", async ({ ack, respond }) => {
 app.command("/bot-staff", async ({ ack, respond }) => {
   await ack();
   await respond({ text: "Principal: Dr. Smith\nVice Principal: Ms. Johnson\nFront office: +1-555-151-0041" });
-});
+}); 
 
 app.command("/bot-holidays", async ({ ack, respond }) => {
   await ack();
