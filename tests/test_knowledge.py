@@ -30,5 +30,5 @@ def test_answer_question_returns_fallback_when_not_found() -> None:
 
     expected = (
         "I couldn't find that information. Please contact the school office."
-    )
+    ) 
     assert answer == expected
